@@ -21,6 +21,9 @@ import { results } from "./pages/results";
 import { root } from "./pages/root";
 import { upload } from "./pages/upload";
 import { user } from "./pages/user";
+import { apiV2 } from "./v2/api";
+import { shell } from "./v2/shell";
+import { deleteV2Rows } from "./v2/store";
 
 export const uploadsDir = "./data/uploads/";
 export const outputDir = "./data/output/";
@@ -42,6 +45,8 @@ const app = new Elysia({
     }),
   )
   .use(user)
+  .use(shell)
+  .use(apiV2)
   .use(root)
   .use(upload)
   .use(history)
@@ -81,10 +86,15 @@ const autoDeleteIntervalMs = AUTO_DELETE_EVERY_N_HOURS * MILLISECONDS_PER_HOUR;
 let clearJobsTimer: ScheduledTask;
 
 const clearJobs = () => {
+  // v2 jobs carry their own keep_until ("forever" = never); legacy jobs use the global window.
+  const now = new Date().toISOString();
   const jobs = db
-    .query("SELECT * FROM jobs WHERE date_created < ?")
+    .query(
+      `SELECT * FROM jobs WHERE (keep_until IS NULL AND date_created < ?1)
+         OR (keep_until IS NOT NULL AND keep_until != 'forever' AND keep_until < ?2)`,
+    )
     .as(Jobs)
-    .all(new Date(Date.now() - autoDeleteIntervalMs).toISOString());
+    .all(new Date(Date.now() - autoDeleteIntervalMs).toISOString(), now);
 
   for (const job of jobs) {
     // delete the directories
@@ -98,10 +108,12 @@ const clearJobs = () => {
     });
 
     // delete the job
+    deleteV2Rows(job.id);
+    db.query("DELETE FROM file_names WHERE job_id = ?").run(job.id);
     db.query("DELETE FROM jobs WHERE id = ?").run(job.id);
   }
 
-  clearJobsTimer = scheduleDelayed(autoDeleteIntervalMs, clearJobs);
+  clearJobsTimer = scheduleDelayed(Math.min(autoDeleteIntervalMs, MILLISECONDS_PER_HOUR), clearJobs);
 };
 
 if (AUTO_DELETE_EVERY_N_HOURS > 0) {

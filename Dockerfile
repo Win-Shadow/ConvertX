@@ -28,9 +28,11 @@ RUN apt-get update && apt-get install -y \
   gosu \
   graphicsmagick \
   imagemagick-7.q16 \
+  img2pdf \
   inkscape \
   latexmk \
   libheif-examples \
+  libimage-exiftool-perl \
   libjxl-tools \
   libreoffice \
   libva2 \
@@ -50,6 +52,7 @@ RUN apt-get update && apt-get install -y \
   texlive-latex-extra \
   texlive-latex-recommended \
   texlive-xetex \
+  zip \
   python3 \
   python3-pip \
   pipx \

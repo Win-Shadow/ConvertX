@@ -20,7 +20,7 @@ import {
 import { FIRST_RUN, userService } from "./user";
 
 export const root = new Elysia().use(userService).get(
-  "/",
+  "/classic",
   async ({ jwt, redirect, cookie: { auth, jobId } }) => {
     if (!ALLOW_UNAUTHENTICATED) {
       if (FIRST_RUN) {

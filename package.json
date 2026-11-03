@@ -11,7 +11,7 @@
     "format:prettier": "bun fmt",
     "build:css": "bun x @tailwindcss/cli -i ./src/main.css -o ./public/generated.css",
     "build:js": "tsc",
-    "build:bin": "bun run build:css && bun build --compile --minify --sourcemap --bytecode --format=esm --define 'process.env.NODE_ENV=\"production\"' src/index.tsx --outfile dist/convertx",
+    "build:bin": "bun run build:css && bun run build:client && bun build --compile --minify --sourcemap --bytecode --format=esm --define 'process.env.NODE_ENV=\"production\"' src/index.tsx --outfile dist/convertx",
     "build:docker": "docker compose build",
     "build": "bun run build:css && bun run build:js",
     "lint": "npm-run-all 'lint:*'",
@@ -21,7 +21,8 @@
     "lint:prettier": "bun fmt --check",
     "lint:xss": "xss-scan",
     "test": "bun test --path-ignore-patterns=tests/integration",
-    "test:integration": "docker build --target test -t convertx:test . && docker run --rm -t -v ./tests:/app/tests -v ./src:/app/src -v ./package.json:/app/package.json convertx:test bun test tests/integration"
+    "test:integration": "docker build --target test -t convertx:test . && docker run --rm -t -v ./tests:/app/tests -v ./src:/app/src -v ./package.json:/app/package.json convertx:test bun test tests/integration",
+    "build:client": "bun build src/client/main.js --outdir public/app --target browser --minify && cp src/client/app.css public/app/app.css"
   },
   "dependencies": {
     "@elysiajs/html": "^1.4.2",
@@ -29,6 +30,8 @@
     "@elysiajs/static": "^1.4.10",
     "@kitajs/html": "^4.2.13",
     "elysia": "1.4.30",
+    "htm": "3",
+    "preact": "10",
     "sanitize-filename": "^1.6.4"
   },
   "devDependencies": {
