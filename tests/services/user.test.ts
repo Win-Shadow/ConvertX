@@ -4,8 +4,12 @@ import { randomUUID } from "node:crypto";
 import { jwt } from "@elysiajs/jwt";
 import { Elysia } from "elysia";
 
+import db from "../../src/db/db";
 import { WEBROOT } from "../../src/helpers/env";
 import { userService } from "../../src/services/user";
+
+// The macro only accepts tokens for accounts that still exist.
+db.query("INSERT OR IGNORE INTO users (id, email, password) VALUES (42, 'macro@example.com', 'x')").run();
 
 let protectedHandlerCalls = 0;
 
@@ -90,6 +94,17 @@ describe("auth macro with a valid token", () => {
     const response = await request("/me", { cookie: `auth=${token}` });
 
     expect(response.headers.get("set-cookie")).toBeNull();
+  });
+});
+
+describe("auth macro with a token for a deleted account", () => {
+  test("rejects it and clears the cookie, even though the token itself is still valid", async () => {
+    const token = await signer.sign({ id: "4242" });
+
+    const response = await request("/me", { cookie: `auth=${token}`, headers: apiCall });
+
+    expect(response.status).toBe(401);
+    expectAuthCookieCleared(response);
   });
 });
 

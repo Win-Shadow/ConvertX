@@ -95,13 +95,14 @@ let clearJobsTimer: ScheduledTask;
 const clearJobs = () => {
   // v2 jobs carry their own keep_until ("forever" = never); legacy jobs use the global window.
   const now = new Date().toISOString();
+  // AUTO_DELETE_EVERY_N_HOURS=0 only turns off the legacy window; per-job keep_until is always honoured.
   const jobs = db
     .query(
-      `SELECT * FROM jobs WHERE (keep_until IS NULL AND date_created < ?1)
+      `SELECT * FROM jobs WHERE (?3 AND keep_until IS NULL AND date_created < ?1)
          OR (keep_until IS NOT NULL AND keep_until != 'forever' AND keep_until < ?2)`,
     )
     .as(Jobs)
-    .all(new Date(Date.now() - autoDeleteIntervalMs).toISOString(), now);
+    .all(new Date(Date.now() - autoDeleteIntervalMs).toISOString(), now, AUTO_DELETE_EVERY_N_HOURS > 0 ? 1 : 0);
 
   for (const job of jobs) {
     // delete the directories
@@ -120,12 +121,13 @@ const clearJobs = () => {
     db.query("DELETE FROM jobs WHERE id = ?").run(job.id);
   }
 
-  clearJobsTimer = scheduleDelayed(Math.min(autoDeleteIntervalMs, MILLISECONDS_PER_HOUR), clearJobs);
+  clearJobsTimer = scheduleDelayed(
+    autoDeleteIntervalMs > 0 ? Math.min(autoDeleteIntervalMs, MILLISECONDS_PER_HOUR) : MILLISECONDS_PER_HOUR,
+    clearJobs,
+  );
 };
 
-if (AUTO_DELETE_EVERY_N_HOURS > 0) {
-  clearJobs();
-}
+clearJobs();
 
 let isShuttingDown = false;
 const handleShutdown = async () => {

@@ -25,10 +25,14 @@ addCol("telegram_chat", "TEXT");
 addCol("notify_code", "TEXT");
 addCol("notify_done", "INTEGER NOT NULL DEFAULT 1");
 
-// Whoever set the server up first is the admin.
-if (!db.query("SELECT 1 FROM users WHERE role = 'admin'").get()) {
-  db.exec("UPDATE users SET role = 'admin' WHERE id = (SELECT MIN(id) FROM users)");
+// Whoever set the server up first is the admin. Checked on every lookup, not just at boot, because on a
+// fresh install the first account is created (by the legacy /setup too) while the server is running.
+function ensureAdmin(): void {
+  if (!db.query("SELECT 1 FROM users WHERE role = 'admin'").get()) {
+    db.exec("UPDATE users SET role = 'admin' WHERE id = (SELECT MIN(id) FROM users)");
+  }
 }
+ensureAdmin();
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS v2_invites (
@@ -65,6 +69,7 @@ export interface Account {
 }
 
 export function getAccount(id: string | number): Account | null {
+  ensureAdmin();
   return db.query("SELECT id, email, name, role, quota_mb, disabled, expires, created, last_seen, prefs, telegram_chat, notify_code, notify_done FROM users WHERE id = ?").get(id) as Account | null;
 }
 

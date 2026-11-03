@@ -1,7 +1,10 @@
-import { lookup } from "node:dns/promises";
+import { lookup as dnsLookup, type LookupAddress } from "node:dns";
 import { mkdirSync, rmSync } from "node:fs";
-import { isIP } from "node:net";
+import http from "node:http";
+import https from "node:https";
+import { BlockList, isIP, type LookupFunction } from "node:net";
 import path from "node:path";
+import { Readable } from "node:stream";
 
 import sanitize from "sanitize-filename";
 
@@ -13,25 +16,80 @@ import { db } from "./store";
 const MAX_REDIRECTS = 5;
 
 // The server sits on the home LAN, so a fetched URL must never reach private address space.
-function privateAddress(ip: string): boolean {
-  if (isIP(ip) === 4) {
-    const [a, b] = ip.split(".").map(Number) as [number, number];
-    return a === 10 || a === 127 || a === 0 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127) || a >= 224;
+const blocked = new BlockList();
+for (const [net, bits] of [["0.0.0.0", 8], ["10.0.0.0", 8], ["100.64.0.0", 10], ["127.0.0.0", 8], ["169.254.0.0", 16], ["172.16.0.0", 12], ["192.0.0.0", 24], ["192.168.0.0", 16], ["198.18.0.0", 15], ["224.0.0.0", 3]] as const) blocked.addSubnet(net, bits, "ipv4");
+for (const [net, bits] of [["::", 128], ["::1", 128], ["fc00::", 7], ["fe80::", 10], ["fec0::", 10], ["ff00::", 8]] as const) blocked.addSubnet(net, bits, "ipv6");
+
+function v6Bytes(ip: string): number[] | null {
+  let v = ip.toLowerCase().split("%")[0]!;
+  const dotted = /(\d+\.\d+\.\d+\.\d+)$/.exec(v);
+  if (dotted) {
+    const o = dotted[1]!.split(".").map(Number);
+    v = v.slice(0, -dotted[1]!.length) + `${((o[0]! << 8) | o[1]!).toString(16)}:${((o[2]! << 8) | o[3]!).toString(16)}`;
   }
-  const v = ip.toLowerCase();
-  if (v === "::1" || v === "::") return true;
-  if (v.startsWith("fc") || v.startsWith("fd") || v.startsWith("fe80")) return true;
-  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(v);
-  return mapped ? privateAddress(mapped[1]!) : false;
+  const [head, tail] = v.includes("::") ? v.split("::") as [string, string] : [v, null];
+  const h = head ? head.split(":") : [], t = tail ? tail.split(":") : [];
+  const groups = tail === null ? h : [...h, ...Array(8 - h.length - t.length).fill("0"), ...t];
+  if (groups.length !== 8) return null;
+  return groups.flatMap((g) => { const n = parseInt(g || "0", 16); return [n >> 8, n & 255]; });
 }
 
-async function assertPublic(u: URL): Promise<void> {
+// IPv6 forms that carry an IPv4 address inside them: mapped, compatible, NAT64, 6to4.
+function embeddedV4(b: number[]): string | null {
+  const zero = (from: number, to: number) => b.slice(from, to).every((x) => x === 0);
+  if (zero(0, 10) && b[10] === 255 && b[11] === 255) return b.slice(12).join(".");
+  if (zero(0, 12)) return b.slice(12).join(".");
+  if (b[0] === 0x00 && b[1] === 0x64 && b[2] === 0xff && b[3] === 0x9b && zero(4, 12)) return b.slice(12).join(".");
+  if (b[0] === 0x20 && b[1] === 0x02) return b.slice(2, 6).join(".");
+  return null;
+}
+
+export function privateAddress(ip: string): boolean {
+  const fam = isIP(ip);
+  if (fam === 4) return blocked.check(ip, "ipv4");
+  if (fam !== 6) return true;
+  const b = v6Bytes(ip);
+  if (!b) return true;
+  const v4 = embeddedV4(b);
+  if (v4 && blocked.check(v4, "ipv4")) return true;
+  const canon = Array.from({ length: 8 }, (_, i) => ((b[2 * i]! << 8) | b[2 * i + 1]!).toString(16)).join(":");
+  return blocked.check(canon, "ipv6");
+}
+
+function assertAllowed(u: URL): void {
   if (u.protocol !== "https:" && u.protocol !== "http:") throw new Error("Only http and https links work.");
   if (u.username || u.password) throw new Error("Links with passwords in them aren't allowed.");
   const host = u.hostname.replace(/^\[|\]$/g, "");
-  const addrs = isIP(host) ? [{ address: host }] : await lookup(host, { all: true }).catch(() => []);
-  if (!addrs.length) throw new Error("That website couldn't be found.");
-  if (addrs.some((a) => privateAddress(a.address))) throw new Error("That link points inside a private network.");
+  if (isIP(host) && privateAddress(host)) throw new Error("That link points inside a private network.");
+}
+
+// Resolution happens inside the connection itself, so the address that was checked is the one connected to.
+const guardedLookup: LookupFunction = (host, opts, cb) => {
+  dnsLookup(host, { ...opts, all: true }, (err, addrs) => {
+    if (err || !addrs.length) return cb(err ?? new Error("That website couldn't be found."), []);
+    if (addrs.some((a) => privateAddress(a.address))) return cb(new Error("That link points inside a private network."), []);
+    if (opts.all) return (cb as unknown as (e: null, a: LookupAddress[]) => void)(null, addrs);
+    cb(null, addrs[0]!.address, addrs[0]!.family);
+  });
+};
+
+const IDLE_TIMEOUT_MS = 30_000;
+
+function get(u: URL): Promise<Response> {
+  return new Promise((resolve, reject) => {
+    const mod = u.protocol === "https:" ? https : http;
+    const req = mod.request(u, { method: "GET", lookup: guardedLookup, headers: { "user-agent": "Mozilla/5.0 (ConvertX import)" } }, (res) => {
+      const headers = new Headers();
+      for (const [k, v] of Object.entries(res.headers)) if (v != null) headers.set(k, Array.isArray(v) ? v.join(", ") : String(v));
+      const status = res.statusCode ?? 502;
+      const body = status >= 200 && status !== 204 && status !== 304 ? (Readable.toWeb(res) as unknown as ReadableStream<Uint8Array>) : (res.resume(), null);
+      resolve(new Response(body, { status, headers }));
+    });
+    // Idle timeout, not a total one: a big file on a slow link keeps going as long as bytes keep arriving.
+    req.setTimeout(IDLE_TIMEOUT_MS, () => req.destroy(new Error("The operation timed out.")));
+    req.on("error", reject);
+    req.end();
+  });
 }
 
 // Share-page links → direct downloads for the services people actually paste.
@@ -88,10 +146,12 @@ export async function startImport(userId: string | number, jobId: number, raw: s
   let u = directUrl(raw);
   let res: Response | null = null;
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
-    await assertPublic(u);
-    res = await fetch(u, { redirect: "manual", headers: { "user-agent": "Mozilla/5.0 (ConvertX import)" }, signal: AbortSignal.timeout(30_000) });
+    assertAllowed(u);
+    res = await get(u);
     if (res.status >= 300 && res.status < 400 && res.headers.get("location")) {
+      void res.body?.cancel();
       u = new URL(res.headers.get("location")!, u);
+      res = null;
       continue;
     }
     break;

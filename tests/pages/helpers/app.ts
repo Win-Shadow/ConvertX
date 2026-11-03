@@ -193,7 +193,7 @@ async function walkThroughFirstRun() {
     return {
       setup: await snapshot(request("/setup")),
       login: await snapshot(request("/login")),
-      home: await snapshot(request("/")),
+      home: await snapshot(request("/classic")),
       register: await snapshot(request("/register", { form: FIRST_ACCOUNT })),
       setupAfterwards: await snapshot(request("/setup")),
       registerAfterwards: await snapshot(request("/register", { form: SECOND_ACCOUNT })),

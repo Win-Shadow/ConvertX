@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync, rmSync, statSync } from "node:fs";
+import { randomInt } from "node:crypto";
+import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { open } from "node:fs/promises";
 import path from "node:path";
 
@@ -7,14 +8,15 @@ import sanitize from "sanitize-filename";
 
 import { getPossibleTargets } from "../converters/main";
 import db from "../db/db";
-import { ACCOUNT_REGISTRATION, ALLOW_UNAUTHENTICATED, WEBROOT } from "../helpers/env";
-import { userService } from "../services/user";
+import { ACCOUNT_REGISTRATION, ALLOW_UNAUTHENTICATED, HTTP_ALLOWED, UNAUTHENTICATED_USER_SHARING, WEBROOT } from "../helpers/env";
+import { isAnonymousId, userService } from "../services/user";
 import { probe } from "./probe";
 import { extOf, GENERIC_PREFIX, kindOf, recipeById } from "./recipes";
 import { enqueue, jobItemsSummary, outputDirFor, queueStats, resumePending, uploadsDirFor } from "./runner";
 import { getAccount, getSettings, quotaBytes, usedBytes } from "./accounts";
 import { startImport } from "./importer";
 import { createShare, SHARE_CHOICES, sharesFor } from "./share";
+import { zipResponse } from "./zip";
 import { deleteV2Rows, getJob, getUploads, type JobRow, type UploadRow } from "./store";
 
 const MAX_UPLOAD_BYTES = (Number(process.env.MAX_UPLOAD_MB) || 4096) * 1024 * 1024;
@@ -30,10 +32,11 @@ function accountBrief(id: string) {
 // Converting can roughly double what a file takes up (original + result), so check against the upload size alone.
 function quotaProblem(userId: string, incoming: number): string | null {
   const a = getAccount(userId);
-  if (!a) return null;
-  const q = quotaBytes(a);
+  // No account row (anonymous sessions) still gets the server's default quota, never unlimited.
+  const mb = getSettings().defaultQuotaMb;
+  const q = a ? quotaBytes(a) : mb > 0 ? mb * 1024 * 1024 : 0;
   if (!q) return null;
-  const used = usedBytes(a.id);
+  const used = usedBytes(userId);
   if (used + incoming <= q) return null;
   const h = (b: number) => (b >= 1024 ** 3 ? `${(b / 1024 ** 3).toFixed(1)} GB` : `${Math.round(b / 1024 ** 2)} MB`);
   const need = incoming ? ` This file needs ${h(incoming)}.` : "";
@@ -66,8 +69,16 @@ export const apiV2 = new Elysia({ prefix: "/api" })
     const firstRun = db.query("SELECT 1 FROM users LIMIT 1").get() === null;
     let user: { id: string } | false = false;
     if (auth?.value) user = await jwt.verify(auth.value as string);
-    const row = user ? (db.query("SELECT email FROM users WHERE id = ?").get(user.id) as { email: string } | null) : null;
-    return { loggedIn: !!user && (!!row || ALLOW_UNAUTHENTICATED), email: row?.email ?? null, firstRun, registration: ACCOUNT_REGISTRATION, webroot: WEBROOT, account: user && row ? accountBrief(user.id) : null, publicUrl: (process.env.PUBLIC_URL ?? "").replace(/\/+$/, "") || null };
+    let row = user ? (db.query("SELECT email FROM users WHERE id = ?").get(user.id) as { email: string } | null) : null;
+    if (user && !row && !isAnonymousId(user.id)) user = false;
+    // Same as the classic home page: with ALLOW_UNAUTHENTICATED a visitor without a session gets an anonymous one.
+    if (!user && ALLOW_UNAUTHENTICATED) {
+      const id = String(UNAUTHENTICATED_USER_SHARING ? 0 : randomInt(2 ** 24, Math.min(2 ** 48 + 2 ** 24 - 1, Number.MAX_SAFE_INTEGER)));
+      auth?.set({ value: await jwt.sign({ id }), httpOnly: true, secure: !HTTP_ALLOWED, maxAge: 24 * 60 * 60, sameSite: "strict" });
+      user = { id };
+      row = null;
+    }
+    return { loggedIn: !!user, email: row?.email ?? null, firstRun, registration: ACCOUNT_REGISTRATION, webroot: WEBROOT, account: user && row ? accountBrief(user.id) : null, defaultKeepHours: getSettings().defaultKeepHours, publicUrl: (process.env.PUBLIC_URL ?? "").replace(/\/+$/, "") || null };
   })
   .guard({ auth: true }, (app) =>
     app
@@ -204,21 +215,14 @@ export const apiV2 = new Elysia({ prefix: "/api" })
         set.headers["content-disposition"] = `${disp}; filename*=UTF-8''${encodeURIComponent(row.out_name)}`;
         return Bun.file(file);
       })
-      .get("/jobs/:id/zip", async ({ params, user, status, set }) => {
+      .get("/jobs/:id/zip", async ({ params, user, status }) => {
         const job = getJob(params.id, user.id);
         if (!job) return status(404, { message: "Not found" });
         const dir = path.resolve(outputDirFor(user.id, job.id));
         const names = (db.query("SELECT out_name FROM v2_items WHERE job_id = ? AND status = 'done'").all(job.id) as { out_name: string }[]).map((r) => sanitize(r.out_name)).filter((n) => existsSync(path.join(dir, n)));
         if (!names.length) return status(404, { message: "No files yet" });
-        const zipDir = path.resolve(`./data/tmp/zip-${job.id}`);
-        rmSync(zipDir, { recursive: true, force: true });
-        mkdirSync(zipDir, { recursive: true });
-        const zipPath = path.join(zipDir, `converted-${job.id}.zip`);
-        const p = Bun.spawn(["zip", "-j", "-q", "-1", zipPath, ...names.map((n) => path.join(dir, n))], { stdout: "ignore", stderr: "pipe" });
-        if ((await p.exited) !== 0) return status(500, { message: "Couldn't build the zip" });
-        set.headers["content-disposition"] = `attachment; filename="converted-${job.id}.zip"`;
-        set.headers["content-length"] = String(statSync(zipPath).size);
-        return Bun.file(zipPath);
+        const res = await zipResponse(names.map((n) => path.join(dir, n)), `converted-${job.id}.zip`);
+        return res ?? status(500, { message: "Couldn't build the zip" });
       })
       .post(
         "/jobs/:id/keep",

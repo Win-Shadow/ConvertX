@@ -249,11 +249,11 @@ describe("GET /account", () => {
     expect(await response.text()).toContain(`value="${user.email}"`);
   });
 
-  test("redirects home when the account no longer exists", async () => {
+  test("rejects the session and clears the cookie when the account no longer exists", async () => {
     const response = await request("/account", { cookies: { auth: await signToken(999_999) } });
 
-    expect(response.status).toBe(302);
-    expect(response.headers.get("location")).toBe("/");
+    expect(response.status).toBe(401);
+    expect(response.headers.get("set-cookie") ?? "").toMatch(/^auth=;/);
   });
 });
 

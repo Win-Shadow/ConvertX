@@ -4,8 +4,15 @@ import { jwt } from "@elysiajs/jwt";
 import { Elysia, t } from "elysia";
 
 import db from "../db/db";
-import { WEBROOT } from "../helpers/env";
+import { ALLOW_UNAUTHENTICATED, WEBROOT } from "../helpers/env";
 import { isHtmlPageRequest } from "../helpers/isHtmlPageRequest";
+
+// Anonymous sessions (ALLOW_UNAUTHENTICATED) use id 0 or ids at/above 2^24; registered accounts sit below.
+export function isAnonymousId(id: string): boolean {
+  if (!ALLOW_UNAUTHENTICATED) return false;
+  const n = Number.parseInt(id);
+  return n === 0 || n >= 2 ** 24;
+}
 
 export const userService = new Elysia({ name: "user/service" })
   .use(
@@ -58,7 +65,11 @@ export const userService = new Elysia({ name: "user/service" })
         auth.remove();
         return unauthorized();
       }
-      // Disabled or expired (guest) accounts lose access immediately, not when their token runs out.
+      // Deleted, disabled or expired accounts lose access immediately, not when their token runs out.
+      if (!isAnonymousId(user.id) && !db.query("SELECT 1 FROM users WHERE id = ?").get(user.id)) {
+        auth.remove();
+        return unauthorized();
+      }
       try {
         const row = db.query("SELECT disabled, expires FROM users WHERE id = ?").get(user.id) as { disabled?: number; expires?: string | null } | null;
         if (row && (row.disabled || (row.expires && new Date(row.expires).getTime() < Date.now()))) {

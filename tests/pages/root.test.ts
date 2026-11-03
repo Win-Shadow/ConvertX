@@ -28,14 +28,14 @@ async function userIdOf(response: Response) {
 
 describe("GET / with accounts", () => {
   test("redirects to the login page without a session", async () => {
-    const response = await request("/");
+    const response = await request("/classic");
 
     expect(response.status).toBe(302);
     expect(response.headers.get("location")).toBe("/login");
   });
 
   test("redirects to the login page for an invalid session", async () => {
-    const response = await request("/", { cookies: { auth: "not-a-jwt" } });
+    const response = await request("/classic", { cookies: { auth: "not-a-jwt" } });
 
     expect(response.status).toBe(302);
     expect(response.headers.get("location")).toBe("/login");
@@ -45,7 +45,7 @@ describe("GET / with accounts", () => {
     const user = await createUser();
     db.query("DELETE FROM users WHERE id = ?").run(user.id);
 
-    const response = await request("/", { cookies: { auth: user.token } });
+    const response = await request("/classic", { cookies: { auth: user.token } });
 
     expect(response.status).toBe(302);
     expect(response.headers.get("location")).toBe("/login");
@@ -57,7 +57,7 @@ describe("GET / with accounts", () => {
   test("starts a new job and remembers it in the jobId cookie", async () => {
     const user = await createUser();
 
-    const response = await request("/", { cookies: { auth: user.token } });
+    const response = await request("/classic", { cookies: { auth: user.token } });
 
     expect(response.status).toBe(200);
     const jobs = jobsOf(user.id);
@@ -75,8 +75,8 @@ describe("GET / with accounts", () => {
   test("starts a fresh job on every visit", async () => {
     const user = await createUser();
 
-    const first = await request("/", { cookies: { auth: user.token } });
-    const second = await request("/", { cookies: { auth: user.token } });
+    const first = await request("/classic", { cookies: { auth: user.token } });
+    const second = await request("/classic", { cookies: { auth: user.token } });
 
     expect(jobsOf(user.id)).toHaveLength(2);
     expect(Number(setCookieValue(second, "jobId"))).toBeGreaterThan(
@@ -87,7 +87,7 @@ describe("GET / with accounts", () => {
   test("offers every target of every converter", async () => {
     const user = await createUser();
 
-    const body = await (await request("/", { cookies: { auth: user.token } })).text();
+    const body = await (await request("/classic", { cookies: { auth: user.token } })).text();
 
     expect(body).toContain('action="/convert"');
     expect(body).toContain('<option value="csv,vcf">csv</option>');
@@ -97,7 +97,7 @@ describe("GET / with accounts", () => {
   test("links the account and logoff pages in the header", async () => {
     const user = await createUser();
 
-    const body = await (await request("/", { cookies: { auth: user.token } })).text();
+    const body = await (await request("/classic", { cookies: { auth: user.token } })).text();
 
     expect(body).toContain('href="/account"');
     expect(body).toContain('href="/logoff"');
@@ -108,7 +108,7 @@ describe("GET / without accounts (ALLOW_UNAUTHENTICATED)", () => {
   test("creates an anonymous session and a job for visitors without a session", async () => {
     setEnv({ ALLOW_UNAUTHENTICATED: true });
 
-    const response = await request("/");
+    const response = await request("/classic");
 
     expect(response.status).toBe(200);
     const userId = await userIdOf(response);
@@ -121,8 +121,8 @@ describe("GET / without accounts (ALLOW_UNAUTHENTICATED)", () => {
   test("gives every anonymous visitor a different id", async () => {
     setEnv({ ALLOW_UNAUTHENTICATED: true });
 
-    const first = await userIdOf(await request("/"));
-    const second = await userIdOf(await request("/"));
+    const first = await userIdOf(await request("/classic"));
+    const second = await userIdOf(await request("/classic"));
 
     expect(first).not.toBe(second);
   });
@@ -130,14 +130,14 @@ describe("GET / without accounts (ALLOW_UNAUTHENTICATED)", () => {
   test("shares one anonymous id when UNAUTHENTICATED_USER_SHARING is enabled", async () => {
     setEnv({ ALLOW_UNAUTHENTICATED: true, UNAUTHENTICATED_USER_SHARING: true });
 
-    expect(await userIdOf(await request("/"))).toBe("0");
-    expect(await userIdOf(await request("/"))).toBe("0");
+    expect(await userIdOf(await request("/classic"))).toBe("0");
+    expect(await userIdOf(await request("/classic"))).toBe("0");
   });
 
   test("hides the account and logoff links", async () => {
     setEnv({ ALLOW_UNAUTHENTICATED: true });
 
-    const body = await (await request("/")).text();
+    const body = await (await request("/classic")).text();
 
     expect(body).not.toContain('href="/account"');
     expect(body).not.toContain('href="/logoff"');
@@ -147,7 +147,7 @@ describe("GET / without accounts (ALLOW_UNAUTHENTICATED)", () => {
     setEnv({ ALLOW_UNAUTHENTICATED: true });
     const user = await createUser();
 
-    const response = await request("/", { cookies: { auth: user.token } });
+    const response = await request("/classic", { cookies: { auth: user.token } });
 
     expect(setCookie(response, "auth")).toBeUndefined();
     expect(jobsOf(user.id)).toHaveLength(1);

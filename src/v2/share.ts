@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, rmSync, statSync } from "node:fs";
+import { existsSync } from "node:fs";
 import path from "node:path";
 
 import { Elysia } from "elysia";
@@ -7,6 +7,7 @@ import sanitize from "sanitize-filename";
 
 import { BRANDING, WEBROOT } from "../helpers/env";
 import { outputDirFor } from "./runner";
+import { zipResponse } from "./zip";
 import { db, type ShareRow } from "./store";
 
 export const SHARE_CHOICES: Record<string, { hours: number; max: number | null }> = {
@@ -106,20 +107,14 @@ export const publicShares = new Elysia()
     set.headers["content-disposition"] = `attachment; filename*=UTF-8''${encodeURIComponent(f.out_name)}`;
     return Bun.file(path.join(outputDirFor(l.job.user_id, l.job.id), sanitize(f.out_name)));
   })
-  .get("/s/:token/zip", async ({ params, set }) => {
+  .get("/s/:token/zip", async ({ params }) => {
     const l = live(params.token);
     if (!l) return gone();
     const list = files(l.share, l.job);
     if (!list.length) return gone();
     const dir = path.resolve(outputDirFor(l.job.user_id, l.job.id));
-    const zipDir = path.resolve(`./data/tmp/share-${l.share.token}`);
-    rmSync(zipDir, { recursive: true, force: true });
-    mkdirSync(zipDir, { recursive: true });
-    const zipPath = path.join(zipDir, "files.zip");
-    const p = Bun.spawn(["zip", "-j", "-q", "-1", zipPath, ...list.map((f) => path.join(dir, sanitize(f.out_name)))], { stdout: "ignore", stderr: "ignore" });
-    if ((await p.exited) !== 0) return new Response("Couldn't build the zip", { status: 500 });
+    const res = await zipResponse(list.map((f) => path.join(dir, sanitize(f.out_name))), "files.zip");
+    if (!res) return new Response("Couldn't build the zip", { status: 500 });
     countDownload(l.share);
-    set.headers["content-disposition"] = `attachment; filename="files.zip"`;
-    set.headers["content-length"] = String(statSync(zipPath).size);
-    return Bun.file(zipPath);
+    return res;
   });

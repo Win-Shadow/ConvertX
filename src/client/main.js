@@ -173,6 +173,10 @@ function App() {
   useEffect(() => {
     loadSession();
   }, []);
+  // The admin's default retention, until the user picks something else for this job.
+  useEffect(() => {
+    if (session?.defaultKeepHours != null) setKeepHours(session.defaultKeepHours);
+  }, [session?.defaultKeepHours]);
   useEffect(() => {
     if (!session?.loggedIn) return;
     api.history().then(setHistory).catch(() => {});
