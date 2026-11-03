@@ -506,7 +506,7 @@ function App() {
           <div class="popover menu" role="menu">
             <div class="muted small" style="padding: 8px 12px">${me?.name ? `${me.name} · ` : ""}${session.email}</div>
             <button type="button" role="menuitem" onClick=${() => { setView("account"); setPopover(null); }}>${t("myAccount")}</button>
-            ${me?.role === "admin" && html`<button type="button" role="menuitem" onClick=${() => { setView("admin"); setPopover(null); }}>${t("adminPage")}</button>`}
+            ${(me?.role ?? session.account?.role) === "admin" && html`<button type="button" role="menuitem" onClick=${() => { setView("admin"); setPopover(null); }}>${t("adminPage")}</button>`}
             <a href=${url("/classic")} role="menuitem">${t("classic")}</a>
             <a href=${url("/logoff")} role="menuitem">${t("logout")}</a>
           </div>`}

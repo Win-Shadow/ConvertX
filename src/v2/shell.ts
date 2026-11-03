@@ -1,7 +1,17 @@
+import { readFileSync } from "node:fs";
+
 import { Elysia } from "elysia";
 
-import { version } from "../../package.json";
 import { BRANDING, WEBROOT } from "../helpers/env";
+
+// package.json's version never changes between our deploys, so browsers kept the old bundle; fingerprint the files instead.
+const version = (() => {
+  try {
+    return Bun.hash(readFileSync("public/app/main.js").toString() + readFileSync("public/app/app.css").toString()).toString(36);
+  } catch {
+    return String(Date.now());
+  }
+})();
 
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
 

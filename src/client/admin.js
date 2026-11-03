@@ -154,7 +154,8 @@ const QUOTAS = [[null, "Default"], [1024, "1 GB"], [5120, "5 GB"], [10240, "10 G
 export function AdminView({ session, me, flash }) {
   const [tab, setTab] = useState("overview");
   const tabs = [["overview", "Overview"], ["people", "People"], ["invites", "Invites"], ["settings", "Settings"]];
-  if (me?.role !== "admin") return html`<p class="muted">Admins only.</p>`;
+  if (!me) return html`<p class="muted">Loading…</p>`;
+  if (me.role !== "admin") return html`<p class="muted">Admins only.</p>`;
   return html`
     <div><h1 class="h1s">Server</h1><p class="lead">Everything about convert.lasgatas.org in one place.</p></div>
     <div class="seggroup" role="tablist" style="align-self: flex-start">
