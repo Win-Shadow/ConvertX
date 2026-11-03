@@ -2,10 +2,11 @@ import { h, render } from "preact";
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import htm from "htm";
 
-import qrcode from "qrcode-generator";
 
 import { describe, estimateMb, extOf, genericRecipe, GENERIC_PREFIX, kindOf, recipeById, recipesFor, recommended, resolveOpts } from "../v2/recipes";
+import { AccountView, AdminView, JoinView } from "./admin";
 import { api, fileUrl, formPost, uploadFile, url, zipUrl } from "./api";
+import { QR as QRBase } from "./qr";
 import { getLang, setLang, t, tr } from "./i18n";
 import { applyTheme, isLight, loadTheme, onSystemModeChange, palette, saveTheme, THEMES } from "./themes";
 
@@ -166,6 +167,8 @@ function App() {
   };
 
   // session
+  const [me, setMe] = useState(null);
+  const prefsReady = useRef(false);
   const loadSession = () => api.session().then(setSession).catch(() => setSession({ loggedIn: false }));
   useEffect(() => {
     loadSession();
@@ -174,7 +177,32 @@ function App() {
     if (!session?.loggedIn) return;
     api.history().then(setHistory).catch(() => {});
     api.storage().then(setStorage).catch(() => {});
+    api.me().then((m) => {
+      setMe(m);
+      // the account's saved look wins over whatever this device had
+      if (m.prefs?.theme || m.prefs?.mode) setThemeState((x) => ({ theme: m.prefs.theme || x.theme, mode: m.prefs.mode || x.mode }));
+      if (m.prefs?.lang) changeLang(m.prefs.lang);
+      setTimeout(() => (prefsReady.current = true), 0);
+    }).catch(() => {});
+    const q = new URLSearchParams(location.search).get("job");
+    if (q && /^\d+$/.test(q)) {
+      window.history.replaceState(null, "", url("/"));
+      openJob(Number(q));
+    }
+    const path = location.pathname.slice(url("").length);
+    if (path === "/admin" || path === "/account") setView(path.slice(1));
   }, [session?.loggedIn]);
+  useEffect(() => {
+    if (!prefsReady.current) return;
+    const tm = setTimeout(() => api.updateMe({ prefs: { theme: theme.theme, mode: theme.mode, lang } }).catch(() => {}), 600);
+    return () => clearTimeout(tm);
+  }, [theme.theme, theme.mode, lang]);
+  useEffect(() => {
+    if (!session?.loggedIn) return;
+    const want = view === "admin" || view === "account" ? url(`/${view}`) : url("/");
+    if (location.pathname !== want) window.history.replaceState(null, "", want);
+    if (view === "add" || view === "account") api.me().then(setMe).catch(() => {});
+  }, [view, session?.loggedIn]);
 
   // window-wide drag & drop while adding
   useEffect(() => {
@@ -444,7 +472,10 @@ function App() {
 
   // ---------- render ----------
   if (!session) return null;
+  const joinToken = /\/join\/([\w-]+)$/.exec(location.pathname)?.[1];
+  if (!session.loggedIn && joinToken) return html`<${JoinView} token=${joinToken} onDone=${loadSession} />`;
   if (!session.loggedIn) return html`<${Auth} session=${session} onDone=${loadSession} lang=${lang} changeLang=${changeLang} />`;
+  if (joinToken) window.history.replaceState(null, "", url("/"));
 
   const stepIdx = { add: 0, choose: 1, get: 2 }[view] ?? -1;
   const ctx = { files, groups, view, setView, jobId, job, setJob, choice, setChoice, vals, setVals, over, setOver, custom, setCustom, ui, toggle, keepHours, setKeepHours, targets, history, storage, queue, pending, addFiles, removeFile, resetAll, start, openJob, shortcut, pickerRef, flash, estFile, optsFor, recipeForFile, setHistory, importUrl, session };
@@ -469,7 +500,9 @@ function App() {
         ${popover === "theme" && html`<${ThemePicker} theme=${theme} setTheme=${setTheme} />`}
         ${popover === "account" && html`
           <div class="popover menu" role="menu">
-            <div class="muted small" style="padding: 8px 12px">${session.email}</div>
+            <div class="muted small" style="padding: 8px 12px">${me?.name ? `${me.name} · ` : ""}${session.email}</div>
+            <button type="button" role="menuitem" onClick=${() => { setView("account"); setPopover(null); }}>${t("myAccount")}</button>
+            ${me?.role === "admin" && html`<button type="button" role="menuitem" onClick=${() => { setView("admin"); setPopover(null); }}>${t("adminPage")}</button>`}
             <a href=${url("/classic")} role="menuitem">${t("classic")}</a>
             <a href=${url("/logoff")} role="menuitem">${t("logout")}</a>
           </div>`}
@@ -477,7 +510,7 @@ function App() {
 
       <div class="wrap layout">
         <main class="main">
-          ${view !== "history" && html`
+          ${["add", "choose", "get"].includes(view) && html`
             <ol class="steps" aria-label="Steps">
               ${t("steps").map((label, i) => {
                 const locked = (i === 1 && !groups.length) || (i === 2 && !job);
@@ -490,13 +523,16 @@ function App() {
           ${view === "choose" && html`<${ChooseView} ...${ctx} />`}
           ${view === "get" && html`<${GetView} ...${ctx} />`}
           ${view === "history" && html`<${HistoryView} ...${ctx} />`}
+          ${view === "account" && html`<${AccountView} me=${me} setMe=${setMe} flash=${flash} />`}
+          ${view === "admin" && html`<${AdminView} session=${session} me=${me} flash=${flash} />`}
         </main>
-        <aside class="side" aria-label="Details">
-          ${(view === "add" || view === "history") && html`<${SideAdd} ...${ctx} />`}
-          ${view === "choose" && html`<${SideChoose} ...${ctx} />`}
-          ${view === "get" && html`<${SideGet} ...${ctx} />`}
-          <${ServerCard} storage=${storage} />
-        </aside>
+        ${view !== "admin" && html`
+          <aside class="side" aria-label="Details">
+            ${(view === "add" || view === "history") && html`<${SideAdd} ...${ctx} />`}
+            ${view === "choose" && html`<${SideChoose} ...${ctx} />`}
+            ${view === "get" && html`<${SideGet} ...${ctx} />`}
+            <${ServerCard} storage=${storage} me=${me} />
+          </aside>`}
       </div>
       <footer class="wrap footer"><span>${t("privacy")}</span></footer>
       <input ref=${pickerRef} type="file" multiple class="sr" tabindex="-1" aria-hidden="true" onChange=${(e) => {
@@ -923,15 +959,7 @@ function SideChoose({ groups, files, estFile, keepHours, setKeepHours, queue, re
     </section>`;
 }
 
-function QR({ text }) {
-  const svg = useMemo(() => {
-    const q = qrcode(0, "M");
-    q.addData(text);
-    q.make();
-    return q.createSvgTag({ cellSize: 4, margin: 3, scalable: true });
-  }, [text]);
-  return html`<div class="qr" role="img" aria-label=${t("qrLabel")} dangerouslySetInnerHTML=${{ __html: svg }}></div>`;
-}
+const QR = ({ text }) => html`<${QRBase} text=${text} label=${t("qrLabel")} />`;
 
 function ShareCard({ job, jobId, setJob, flash, publicUrl }) {
   const [choice, setChoice] = useState("24h");
@@ -1015,11 +1043,14 @@ function SideGet({ job, jobId, setJob, flash, session }) {
     </section>`;
 }
 
-function ServerCard({ storage }) {
+function ServerCard({ storage, me }) {
+  const pct = me?.quota ? Math.min(100, (me.used / me.quota) * 100) : 0;
   return html`
     <section class="card pad">
       <div class="kv"><strong style="color: var(--tx)">${t("server")}</strong><span class="ok" style="display: flex; align-items: center; gap: 6px"><span class="dot"></span>${t("running")}</span></div>
-      ${storage && html`<div class="kv"><span>${t("yourSpace")}</span><span>${fmtBytes(storage.used)}</span></div>`}
+      ${me && html`<div class="kv"><span>${t("yourSpace")}</span><span>${fmtBytes(me.used)}${me.quota ? ` / ${fmtBytes(me.quota)}` : ""}</span></div>`}
+      ${me?.quota > 0 && html`<div class="minibar"><div style=${`width:${pct}%;${pct > 90 ? "background: var(--wbtn)" : ""}`}></div></div>`}
+      ${me?.role === "guest" && me.expires && html`<div class="kv"><span>${t("guestAccount")}</span><span>${t("guestUntil", { x: relTime(me.expires) })}</span></div>`}
       ${storage && html`<div class="kv"><span>${t("biggest")}</span><span>${fmtBytes(storage.maxUpload)}</span></div>`}
     </section>`;
 }
@@ -1036,12 +1067,13 @@ function Auth({ session, onDone, lang, changeLang }) {
     setBusy(true);
     setErr(null);
     try {
-      const ok = await formPost(setup ? "/register" : "/login", { email, password });
+      if (setup) await formPost("/register", { email, password });
+      else await api.login(email, password);
       const s = await api.session();
-      if (ok && s.loggedIn) onDone();
+      if (s.loggedIn) onDone();
       else setErr(t("badLogin"));
-    } catch {
-      setErr(t("badLogin"));
+    } catch (x) {
+      setErr(x.message === "disabled" ? t("loginDisabled") : x.message === "expired" ? t("loginExpired") : t("badLogin"));
     } finally {
       setBusy(false);
     }

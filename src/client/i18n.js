@@ -1,4 +1,14 @@
 const EN = {
+  myAccount: "My account", adminPage: "Server admin", guestAccount: "Guest account", guestUntil: "until {x}",
+  loginDisabled: "This account is turned off. Ask Jorge.", loginExpired: "This guest account has expired. Ask Jorge for a new invite.",
+  inviteGone: "This invite has expired", inviteGoneSub: "Ask the person who sent it for a new link.",
+  joinTitle: "You're invited", joinSub: "Make your account to start converting files.", joinGuest: "This is a guest account that lasts {n} days, then it and its files are deleted.",
+  yourName: "Your name", pwHint: "At least 8 characters.", save: "Save", saved: "Saved", pwChanged: "Password changed",
+  storage: "Storage", storageHint: "Originals and results both count. Delete old conversions in History to free space.",
+  notifications: "Notifications", connected: "Connected", notifyDone: "Message me when a long conversion finishes", notifyDoneHint: "So you can close the page and come back later",
+  disconnect: "Disconnect Telegram", tgWhy: "Get a Telegram message when your files are ready.", tgConnect: "Connect Telegram", tgWaiting: "Waiting for Telegram… tap Start there",
+  tgConnected: "Telegram connected!", tgNotSetUp: "Telegram messages aren't set up on this server yet.",
+  changePw: "Change password", currentPw: "Current password", newPw: "New password",
   history: "History", newConversion: "+ New conversion", account: "Account", logout: "Log out", classic: "Classic ConvertX",
   theme: "Theme", dark: "Dark", light: "Light", auto: "Auto", themeNote: "Saved on this device. Auto follows your device's dark/light setting.",
   steps: ["Add files", "Choose", "Download"],
@@ -48,6 +58,16 @@ const EN = {
 };
 
 const ES = {
+  myAccount: "Mi cuenta", adminPage: "Administrar servidor", guestAccount: "Cuenta de invitado", guestUntil: "hasta {x}",
+  loginDisabled: "Esta cuenta está desactivada. Avísale a Jorge.", loginExpired: "Esta cuenta de invitado venció. Pídele a Jorge una nueva invitación.",
+  inviteGone: "Esta invitación venció", inviteGoneSub: "Pídele un nuevo enlace a quien te la mandó.",
+  joinTitle: "Estás invitado", joinSub: "Crea tu cuenta para empezar a convertir archivos.", joinGuest: "Es una cuenta de invitado que dura {n} días; después se borra junto con sus archivos.",
+  yourName: "Tu nombre", pwHint: "Al menos 8 caracteres.", save: "Guardar", saved: "Guardado", pwChanged: "Contraseña cambiada",
+  storage: "Espacio", storageHint: "Cuentan los originales y los resultados. Borra conversiones viejas en Historial para liberar espacio.",
+  notifications: "Avisos", connected: "Conectado", notifyDone: "Avísame cuando termine una conversión larga", notifyDoneHint: "Así puedes cerrar la página y volver luego",
+  disconnect: "Desconectar Telegram", tgWhy: "Recibe un mensaje de Telegram cuando tus archivos estén listos.", tgConnect: "Conectar Telegram", tgWaiting: "Esperando a Telegram… toca Iniciar allá",
+  tgConnected: "¡Telegram conectado!", tgNotSetUp: "Los avisos de Telegram aún no están configurados en este servidor.",
+  changePw: "Cambiar contraseña", currentPw: "Contraseña actual", newPw: "Contraseña nueva",
   history: "Historial", newConversion: "+ Nueva conversión", account: "Cuenta", logout: "Cerrar sesión", classic: "ConvertX clásico",
   theme: "Tema", dark: "Oscuro", light: "Claro", auto: "Auto", themeNote: "Se guarda en este dispositivo. Auto sigue el modo claro/oscuro de tu dispositivo.",
   steps: ["Agregar", "Elegir", "Descargar"],

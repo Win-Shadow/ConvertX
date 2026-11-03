@@ -4,7 +4,7 @@ import path from "node:path";
 import { mainConverter } from "../converters/main";
 import { normalizeFiletype } from "../helpers/normalizeFiletype";
 import { clipDuration, extOf, GENERIC_PREFIX, recipeById, resolveOpts, type FileInfo, type OptionValues } from "./recipes";
-import { db, getItems, refreshJobStatus, updateItem, type ItemRow } from "./store";
+import { db, getItems, hooks, refreshJobStatus, updateItem, type ItemRow } from "./store";
 
 export const DATA = "./data";
 export const uploadsDirFor = (userId: string | number, jobId: number) => `${DATA}/uploads/${userId}/${jobId}/`;
@@ -149,6 +149,7 @@ async function runItem(itemId: number): Promise<void> {
   const finish = (fields: Partial<ItemRow>) => {
     updateItem(itemId, { ...fields, finished: new Date().toISOString() });
     rmSync(tmp, { recursive: true, force: true });
+    if (fields.status === "failed") for (const h of hooks.itemFailed) h(itemId);
     refreshJobStatus(job.id);
   };
 

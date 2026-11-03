@@ -95,11 +95,19 @@ export function updateItem(id: number, fields: Partial<ItemRow>): void {
   db.query(sql).run(...(keys.map((k) => (fields as Record<string, unknown>)[k]) as (string | number | null)[]), id);
 }
 
+// Notification hooks live here so runner/notify don't import each other.
+export const hooks = {
+  jobDone: [] as ((jobId: number) => void)[],
+  itemFailed: [] as ((itemId: number) => void)[],
+};
+
 export function refreshJobStatus(jobId: number): void {
   const items = getItems(jobId);
   if (!items.length) return;
   const busy = items.some((i) => i.status === "queued" || i.status === "running");
+  const before = db.query("SELECT status FROM jobs WHERE id = ?").get(jobId) as { status: string } | null;
   db.query("UPDATE jobs SET status = ? WHERE id = ?").run(busy ? "running" : "completed", jobId);
+  if (!busy && before?.status !== "completed") for (const h of hooks.jobDone) h(jobId);
 }
 
 export function deleteV2Rows(jobId: number): void {

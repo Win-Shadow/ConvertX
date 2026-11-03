@@ -30,8 +30,11 @@ const page = () => `<!doctype html>
 </body>
 </html>`;
 
-export const shell = new Elysia().get("/", ({ set }) => {
+const serve = ({ set }: { set: { headers: Record<string, string | number> } }) => {
   set.headers["content-type"] = "text/html; charset=utf-8";
   set.headers["cache-control"] = "no-cache";
   return page();
-});
+};
+
+// Client-side views that can be opened by URL (invite links, bookmarks).
+export const shell = new Elysia().get("/", serve).get("/join/:token", serve).get("/admin", serve).get("/account", serve);

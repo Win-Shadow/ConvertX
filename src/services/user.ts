@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { jwt } from "@elysiajs/jwt";
 import { Elysia, t } from "elysia";
 
+import db from "../db/db";
 import { WEBROOT } from "../helpers/env";
 import { isHtmlPageRequest } from "../helpers/isHtmlPageRequest";
 
@@ -56,6 +57,16 @@ export const userService = new Elysia({ name: "user/service" })
       if (!user) {
         auth.remove();
         return unauthorized();
+      }
+      // Disabled or expired (guest) accounts lose access immediately, not when their token runs out.
+      try {
+        const row = db.query("SELECT disabled, expires FROM users WHERE id = ?").get(user.id) as { disabled?: number; expires?: string | null } | null;
+        if (row && (row.disabled || (row.expires && new Date(row.expires).getTime() < Date.now()))) {
+          auth.remove();
+          return unauthorized();
+        }
+      } catch {
+        /* columns not migrated yet */
       }
       return {
         success: true,

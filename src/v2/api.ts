@@ -12,6 +12,7 @@ import { userService } from "../services/user";
 import { probe } from "./probe";
 import { extOf, GENERIC_PREFIX, kindOf, recipeById } from "./recipes";
 import { enqueue, jobItemsSummary, outputDirFor, queueStats, resumePending, uploadsDirFor } from "./runner";
+import { getAccount, getSettings, quotaBytes, usedBytes } from "./accounts";
 import { startImport } from "./importer";
 import { createShare, SHARE_CHOICES, sharesFor } from "./share";
 import { deleteV2Rows, getJob, getUploads, type JobRow, type UploadRow } from "./store";
@@ -20,6 +21,24 @@ const MAX_UPLOAD_BYTES = (Number(process.env.MAX_UPLOAD_MB) || 4096) * 1024 * 10
 const KEEP_CHOICES = [24, 72, 168, -1]; // hours, -1 = until deleted
 
 resumePending();
+
+function accountBrief(id: string) {
+  const a = getAccount(id);
+  return a ? { name: a.name, role: a.role, expires: a.expires } : null;
+}
+
+// Converting can roughly double what a file takes up (original + result), so check against the upload size alone.
+function quotaProblem(userId: string, incoming: number): string | null {
+  const a = getAccount(userId);
+  if (!a) return null;
+  const q = quotaBytes(a);
+  if (!q) return null;
+  const used = usedBytes(a.id);
+  if (used + incoming <= q) return null;
+  const h = (b: number) => (b >= 1024 ** 3 ? `${(b / 1024 ** 3).toFixed(1)} GB` : `${Math.round(b / 1024 ** 2)} MB`);
+  const need = incoming ? ` This file needs ${h(incoming)}.` : "";
+  return `You're using ${h(used)} of your ${h(q)}.${need} Delete old conversions in History to make room.`;
+}
 
 function keepUntil(hours: number): string | null {
   if (hours === -1) return "forever";
@@ -48,7 +67,7 @@ export const apiV2 = new Elysia({ prefix: "/api" })
     let user: { id: string } | false = false;
     if (auth?.value) user = await jwt.verify(auth.value as string);
     const row = user ? (db.query("SELECT email FROM users WHERE id = ?").get(user.id) as { email: string } | null) : null;
-    return { loggedIn: !!user && (!!row || ALLOW_UNAUTHENTICATED), email: row?.email ?? null, firstRun, registration: ACCOUNT_REGISTRATION, webroot: WEBROOT, publicUrl: (process.env.PUBLIC_URL ?? "").replace(/\/+$/, "") || null };
+    return { loggedIn: !!user && (!!row || ALLOW_UNAUTHENTICATED), email: row?.email ?? null, firstRun, registration: ACCOUNT_REGISTRATION, webroot: WEBROOT, account: user && row ? accountBrief(user.id) : null, publicUrl: (process.env.PUBLIC_URL ?? "").replace(/\/+$/, "") || null };
   })
   .guard({ auth: true }, (app) =>
     app
@@ -81,6 +100,10 @@ export const apiV2 = new Elysia({ prefix: "/api" })
           const total = Number(query.total ?? 0);
           if (!name || !Number.isFinite(offset) || !Number.isFinite(total) || offset < 0 || total <= 0) return status(400, { message: "Bad upload" });
           if (total > MAX_UPLOAD_BYTES) return status(413, { message: `Files can be up to ${Math.round(MAX_UPLOAD_BYTES / 1048576)} MB` });
+          if (offset === 0) {
+            const over = quotaProblem(user.id, total);
+            if (over) return status(413, { message: over });
+          }
 
           const dir = uploadsDirFor(user.id, job.id);
           mkdirSync(dir, { recursive: true });
@@ -141,7 +164,7 @@ export const apiV2 = new Elysia({ prefix: "/api" })
           }
           if (!rows.length) return status(400, { message: "Nothing to convert" });
 
-          const hours = KEEP_CHOICES.includes(Number(body.keepHours)) ? Number(body.keepHours) : 24;
+          const hours = KEEP_CHOICES.includes(Number(body.keepHours)) ? Number(body.keepHours) : getSettings().defaultKeepHours;
           db.query("UPDATE jobs SET status = 'running', num_files = ?, keep_until = ? WHERE id = ?").run(rows.length, keepUntil(hours), job.id);
           const ins = db.query("INSERT INTO v2_items (job_id, recipe, opts, inputs, out_name, in_size) VALUES (?, ?, ?, ?, ?, ?)");
           for (const r of rows) {
@@ -214,6 +237,8 @@ export const apiV2 = new Elysia({ prefix: "/api" })
           const job = getJob(params.id, user.id);
           if (!job) return status(404, { message: "Not found" });
           try {
+            const over = quotaProblem(user.id, 0);
+            if (over) return status(413, { message: over });
             return await startImport(user.id, job.id, body.url, MAX_UPLOAD_BYTES);
           } catch (e) {
             const msg = e instanceof Error ? e.message : "Couldn't get that file.";

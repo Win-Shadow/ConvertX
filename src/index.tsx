@@ -22,6 +22,8 @@ import { root } from "./pages/root";
 import { upload } from "./pages/upload";
 import { user } from "./pages/user";
 import { apiV2 } from "./v2/api";
+import { startNotifier } from "./v2/notify";
+import { people, startSweeper } from "./v2/people";
 import { publicShares } from "./v2/share";
 import { shell } from "./v2/shell";
 import { deleteV2Rows } from "./v2/store";
@@ -48,6 +50,7 @@ const app = new Elysia({
   .use(user)
   .use(shell)
   .use(publicShares)
+  .use(people)
   .use(apiV2)
   .use(root)
   .use(upload)
@@ -80,6 +83,8 @@ if (process.env.NODE_ENV !== "production") {
 }
 
 app.listen(process.env.PORT || 3000);
+startNotifier();
+startSweeper();
 
 console.log(`🦊 Elysia is running at http://${app.server?.hostname}:${app.server?.port}${WEBROOT}`);
 
