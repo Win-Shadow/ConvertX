@@ -105,6 +105,35 @@ export function refreshJobStatus(jobId: number): void {
 export function deleteV2Rows(jobId: number): void {
   db.query("DELETE FROM v2_items WHERE job_id = ?").run(jobId);
   db.query("DELETE FROM v2_uploads WHERE job_id = ?").run(jobId);
+  db.query("DELETE FROM v2_shares WHERE job_id = ?").run(jobId);
 }
 
 export { db };
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS v2_shares (
+    token TEXT PRIMARY KEY,
+    job_id INTEGER NOT NULL,
+    item_id INTEGER,
+    expires TEXT NOT NULL,
+    max_downloads INTEGER,
+    downloads INTEGER NOT NULL DEFAULT 0,
+    created TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS v2_shares_job ON v2_shares(job_id);
+`);
+{
+  const cols = db.query("PRAGMA table_info(v2_uploads)").all() as { name: string }[];
+  if (!cols.some((c) => c.name === "error")) db.exec("ALTER TABLE v2_uploads ADD COLUMN error TEXT");
+  if (!cols.some((c) => c.name === "source")) db.exec("ALTER TABLE v2_uploads ADD COLUMN source TEXT");
+}
+
+export interface ShareRow {
+  token: string;
+  job_id: number;
+  item_id: number | null;
+  expires: string;
+  max_downloads: number | null;
+  downloads: number;
+  created: string;
+}

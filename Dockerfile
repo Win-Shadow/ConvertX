@@ -6,6 +6,18 @@ COPY . .
 
 RUN bun run build:bin
 
+# Speech-to-text for transcripts/subtitles. Built separately so the release image stays free of compilers.
+FROM debian:testing-slim AS whisper
+ARG WHISPER_VERSION=v1.9.5
+ARG WHISPER_MODEL=small
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential cmake git ca-certificates curl \
+  && rm -rf /var/lib/apt/lists/*
+RUN git clone --depth 1 --branch ${WHISPER_VERSION} https://github.com/ggml-org/whisper.cpp /src \
+  && cmake -S /src -B /src/build -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DGGML_NATIVE=OFF -DWHISPER_BUILD_TESTS=OFF \
+  && cmake --build /src/build -j --target whisper-cli \
+  && mkdir -p /opt/whisper && cp /src/build/bin/whisper-cli /opt/whisper/ \
+  && curl -fL -o /opt/whisper/ggml-${WHISPER_MODEL}.bin https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-${WHISPER_MODEL}.bin
+
 FROM debian:testing-slim AS release
 LABEL org.opencontainers.image.source="https://github.com/C4illin/ConvertX"
 WORKDIR /app
@@ -59,6 +71,18 @@ RUN apt-get update && apt-get install -y \
   --no-install-recommends \
   && pipx install "markitdown[all]" \
   && rm -rf /var/lib/apt/lists/*
+
+# OCR for scans and photos; separate layer so the big install above stays cached
+RUN apt-get update && apt-get install -y --no-install-recommends \
+  libgomp1 \
+  ocrmypdf \
+  tesseract-ocr \
+  tesseract-ocr-eng \
+  tesseract-ocr-spa \
+  && rm -rf /var/lib/apt/lists/*
+
+COPY --from=whisper /opt/whisper /opt/whisper
+RUN ln -s /opt/whisper/whisper-cli /usr/local/bin/whisper-cli
 
 # Remove when patch is released
 RUN pipx runpip markitdown install --upgrade --no-cache-dir "Brotli>=1.2.1" "brotlicffi>=1.2.1.0"

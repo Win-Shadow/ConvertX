@@ -12,7 +12,9 @@ import { userService } from "../services/user";
 import { probe } from "./probe";
 import { extOf, GENERIC_PREFIX, kindOf, recipeById } from "./recipes";
 import { enqueue, jobItemsSummary, outputDirFor, queueStats, resumePending, uploadsDirFor } from "./runner";
-import { deleteV2Rows, getJob, getUploads, type JobRow } from "./store";
+import { startImport } from "./importer";
+import { createShare, SHARE_CHOICES, sharesFor } from "./share";
+import { deleteV2Rows, getJob, getUploads, type JobRow, type UploadRow } from "./store";
 
 const MAX_UPLOAD_BYTES = (Number(process.env.MAX_UPLOAD_MB) || 4096) * 1024 * 1024;
 const KEEP_CHOICES = [24, 72, 168, -1]; // hours, -1 = until deleted
@@ -30,8 +32,12 @@ function jobView(job: JobRow) {
     created: job.date_created,
     status: job.status,
     keepUntil: job.keep_until,
-    uploads: getUploads(job.id).map((u) => ({ name: u.name, size: u.size, complete: u.received >= u.size, info: u.info ? JSON.parse(u.info) : null })),
+    uploads: getUploads(job.id).map((u) => {
+      const r = u as UploadRow & { error?: string | null; source?: string | null };
+      return { name: u.name, size: u.size, received: u.received, complete: u.size >= 0 && u.received >= u.size && !!u.info, info: u.info ? JSON.parse(u.info) : null, error: r.error ?? null, imported: !!r.source };
+    }),
     items: jobItemsSummary(job.id),
+    shares: sharesFor(job.id).filter((s) => new Date(s.expires).getTime() > Date.now() && (s.max_downloads == null || s.downloads < s.max_downloads)).map((s) => ({ token: s.token, itemId: s.item_id, expires: s.expires, once: s.max_downloads === 1, downloads: s.downloads })),
   };
 }
 
@@ -42,7 +48,7 @@ export const apiV2 = new Elysia({ prefix: "/api" })
     let user: { id: string } | false = false;
     if (auth?.value) user = await jwt.verify(auth.value as string);
     const row = user ? (db.query("SELECT email FROM users WHERE id = ?").get(user.id) as { email: string } | null) : null;
-    return { loggedIn: !!user && (!!row || ALLOW_UNAUTHENTICATED), email: row?.email ?? null, firstRun, registration: ACCOUNT_REGISTRATION, webroot: WEBROOT };
+    return { loggedIn: !!user && (!!row || ALLOW_UNAUTHENTICATED), email: row?.email ?? null, firstRun, registration: ACCOUNT_REGISTRATION, webroot: WEBROOT, publicUrl: (process.env.PUBLIC_URL ?? "").replace(/\/+$/, "") || null };
   })
   .guard({ auth: true }, (app) =>
     app
@@ -202,6 +208,39 @@ export const apiV2 = new Elysia({ prefix: "/api" })
         },
         { body: t.Object({ hours: t.Number() }) },
       )
+      .post(
+        "/jobs/:id/import",
+        async ({ params, body, user, status }) => {
+          const job = getJob(params.id, user.id);
+          if (!job) return status(404, { message: "Not found" });
+          try {
+            return await startImport(user.id, job.id, body.url, MAX_UPLOAD_BYTES);
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : "Couldn't get that file.";
+            return status(400, { message: /^Invalid URL|URL/.test(msg) ? "That doesn't look like a link." : msg.includes("timed out") ? "The website took too long to answer." : msg });
+          }
+        },
+        { body: t.Object({ url: t.String({ maxLength: 2000 }) }) },
+      )
+      .post(
+        "/jobs/:id/share",
+        ({ params, body, user, status }) => {
+          const job = getJob(params.id, user.id);
+          if (!job) return status(404, { message: "Not found" });
+          if (!(body.choice in SHARE_CHOICES)) return status(400, { message: "Bad choice" });
+          const itemId = body.itemId ?? null;
+          if (itemId != null && !db.query("SELECT 1 FROM v2_items WHERE id = ? AND job_id = ? AND status = 'done'").get(itemId, job.id)) return status(404, { message: "Not found" });
+          const s = createShare(job.id, itemId, body.choice, job.keep_until);
+          return { token: s.token, expires: s.expires, once: s.max_downloads === 1 };
+        },
+        { body: t.Object({ choice: t.String(), itemId: t.Optional(t.Number()) }) },
+      )
+      .delete("/jobs/:id/share/:token", ({ params, user, status }) => {
+        const job = getJob(params.id, user.id);
+        if (!job) return status(404, { message: "Not found" });
+        db.query("DELETE FROM v2_shares WHERE token = ? AND job_id = ?").run(params.token, job.id);
+        return { ok: true };
+      })
       .delete("/jobs/:id", ({ params, user, status }) => {
         const job = getJob(params.id, user.id);
         if (!job) return status(404, { message: "Not found" });

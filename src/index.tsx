@@ -22,6 +22,7 @@ import { root } from "./pages/root";
 import { upload } from "./pages/upload";
 import { user } from "./pages/user";
 import { apiV2 } from "./v2/api";
+import { publicShares } from "./v2/share";
 import { shell } from "./v2/shell";
 import { deleteV2Rows } from "./v2/store";
 
@@ -46,6 +47,7 @@ const app = new Elysia({
   )
   .use(user)
   .use(shell)
+  .use(publicShares)
   .use(apiV2)
   .use(root)
   .use(upload)

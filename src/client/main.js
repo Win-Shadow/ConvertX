@@ -2,7 +2,9 @@ import { h, render } from "preact";
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import htm from "htm";
 
-import { describe, estimateMb, extOf, genericRecipe, GENERIC_PREFIX, kindOf, recipeById, recipesFor, resolveOpts } from "../v2/recipes";
+import qrcode from "qrcode-generator";
+
+import { describe, estimateMb, extOf, genericRecipe, GENERIC_PREFIX, kindOf, recipeById, recipesFor, recommended, resolveOpts } from "../v2/recipes";
 import { api, fileUrl, formPost, uploadFile, url, zipUrl } from "./api";
 import { getLang, setLang, t, tr } from "./i18n";
 import { applyTheme, isLight, loadTheme, onSystemModeChange, palette, saveTheme, THEMES } from "./themes";
@@ -302,6 +304,36 @@ function App() {
     setView("add");
   };
 
+  const importUrl = async (link) => {
+    const id = await ensureJob();
+    const r = await api.importUrl(id, link);
+    const ext = extOf(r.name);
+    const entry = { name: r.name, size: r.size > 0 ? r.size : 0, ext, kind: kindOf(ext), state: "importing", progress: 0, info: null, imported: true };
+    filesRef.current = [...filesRef.current, entry];
+    setFiles(filesRef.current);
+  };
+
+  const importing = files.some((f) => f.state === "importing");
+  useEffect(() => {
+    if (!importing || !jobId) return;
+    const timer = setInterval(async () => {
+      try {
+        const j = await api.job(jobId);
+        const byName = new Map(j.uploads.map((u) => [u.name, u]));
+        setFiles((fs) => fs.map((f) => {
+          const u = f.state === "importing" && byName.get(f.name);
+          if (!u) return f;
+          if (u.error) return { ...f, state: "error", error: u.error };
+          if (u.complete) return { ...f, state: "ready", progress: 1, size: u.size, info: u.info || {} };
+          return { ...f, size: u.size > 0 ? u.size : u.received, progress: u.size > 0 ? u.received / u.size : 0, received: u.received };
+        }));
+      } catch {
+        /* keep polling */
+      }
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [importing, jobId]);
+
   // ---------- grouping ----------
   const groups = useMemo(() => {
     const live = files.filter((f) => f.state !== "error");
@@ -310,6 +342,8 @@ function App() {
       if (!fs.length) return null;
       const exts = [...new Set(fs.map((f) => f.ext))];
       let list = recipesFor(kind, exts);
+      const rec = recommended(kind, fs.map((f) => f.info || {}));
+      if (rec && list.some((r) => r.id === rec)) list = [list.find((r) => r.id === rec), ...list.filter((r) => r.id !== rec)];
       if (custom[kind]) list = [...list, genericRecipe(kind, custom[kind])];
       const chosen = list.find((r) => r.id === choice[kind]) || list[0] || null;
       return { kind, files: fs, exts, list, recipe: chosen };
@@ -331,7 +365,7 @@ function App() {
   };
 
   // ---------- start / poll ----------
-  const pending = files.filter((f) => f.state === "queued" || f.state === "uploading" || f.state === "checking").length;
+  const pending = files.filter((f) => f.state === "queued" || f.state === "uploading" || f.state === "checking" || f.state === "importing").length;
 
   const start = async () => {
     const items = [];
@@ -413,7 +447,7 @@ function App() {
   if (!session.loggedIn) return html`<${Auth} session=${session} onDone=${loadSession} lang=${lang} changeLang=${changeLang} />`;
 
   const stepIdx = { add: 0, choose: 1, get: 2 }[view] ?? -1;
-  const ctx = { files, groups, view, setView, jobId, job, setJob, choice, setChoice, vals, setVals, over, setOver, custom, setCustom, ui, toggle, keepHours, setKeepHours, targets, history, storage, queue, pending, addFiles, removeFile, resetAll, start, openJob, shortcut, pickerRef, flash, estFile, optsFor, recipeForFile, setHistory };
+  const ctx = { files, groups, view, setView, jobId, job, setJob, choice, setChoice, vals, setVals, over, setOver, custom, setCustom, ui, toggle, keepHours, setKeepHours, targets, history, storage, queue, pending, addFiles, removeFile, resetAll, start, openJob, shortcut, pickerRef, flash, estFile, optsFor, recipeForFile, setHistory, importUrl, session };
 
   return html`
     <div onClick=${(e) => popover && !e.target.closest(".popover,.pop-trigger") && setPopover(null)}>
@@ -499,7 +533,36 @@ function ThemePicker({ theme, setTheme }) {
 }
 
 // ---------- step 1 ----------
-function AddView({ files, removeFile, resetAll, setView, pickerRef, groups, storage }) {
+function ImportForm({ importUrl }) {
+  const [link, setLink] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+  const submit = async (e) => {
+    e.preventDefault();
+    if (!link.trim()) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      await importUrl(link.trim());
+      setLink("");
+    } catch (x) {
+      setErr(x.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return html`
+    <form onSubmit=${submit} style="display: flex; flex-direction: column; gap: 8px">
+      <div style="display: flex; gap: 10px; flex-wrap: wrap">
+        <label class="sr" for="import-url">${t("paste")}</label>
+        <input id="import-url" type="url" placeholder=${t("paste")} value=${link} onInput=${(e) => setLink(e.target.value)} style="flex: 1 1 320px; padding: 14px 16px; border-radius: 14px; background: var(--sf); font-size: 15px" />
+        <button type="submit" class="btn" disabled=${busy || !link.trim()}>${busy ? t("fetching") : t("fetch")}</button>
+      </div>
+      ${err && html`<div class="err" role="alert">${err}</div>`}
+    </form>`;
+}
+
+function AddView({ files, removeFile, resetAll, setView, pickerRef, groups, storage, importUrl }) {
   const has = files.length > 0;
   const totalSize = files.reduce((a, f) => a + f.size, 0);
   const pending = files.filter((f) => f.state !== "ready" && f.state !== "error").length;
@@ -522,6 +585,7 @@ function AddView({ files, removeFile, resetAll, setView, pickerRef, groups, stor
       <span class="big">${has ? t("dropMore") : t("drop")}</span>
       <span class="muted">${t("dropSub", { max })}</span>
     </button>
+    <${ImportForm} importUrl=${importUrl} />
     ${has && html`
       <section class="card" aria-label="Files">
         <div class="cardhead">
@@ -536,6 +600,7 @@ function AddView({ files, removeFile, resetAll, setView, pickerRef, groups, stor
               ${f.state === "ready" && html`<span class="muted small">${fileMeta(f) || " "}</span>`}
               ${(f.state === "uploading" || f.state === "queued") && html`<div style="display: flex; align-items: center; gap: 10px"><div class="minibar" style="flex: 1"><div style=${`width:${Math.round(f.progress * 100)}%`}></div></div><span class="muted small">${t("uploading", { pct: Math.round(f.progress * 100) })}</span></div>`}
               ${f.state === "checking" && html`<span class="muted small">${t("checking")}</span>`}
+              ${f.state === "importing" && html`<div style="display: flex; align-items: center; gap: 10px"><div class="minibar" style="flex: 1"><div style=${`width:${Math.round(f.progress * 100)}%`}></div></div><span class="muted small">${f.progress > 0 ? t("downloadingPct", { pct: Math.round(f.progress * 100) }) : t("downloadingAmt", { x: fmtBytes(f.received || 0) })}</span></div>`}
               ${f.state === "error" && html`<span class="small" style="color: var(--wt)">${t("uploadFailed")}: ${f.error}</span>`}
             </div>
             <span class="mono small" style="flex: none">${fmtBytes(f.size)}</span>
@@ -819,7 +884,10 @@ function SideChoose({ groups, files, estFile, keepHours, setKeepHours, queue, re
     for (const f of g.files) {
       outMb += estFile(f, g);
       const dur = f.info?.duration || 0;
-      secs += f.kind === "video" ? dur * 0.7 + 3 : f.kind === "audio" ? dur * 0.05 + 2 : f.kind === "image" ? 1 : 5;
+      const r = recipeForFile(f, g);
+      if (r && /transcript|subs/.test(r.id)) secs += dur * 0.35 + 10;
+      else if (r && r.id.startsWith("pdf-ocr")) secs += (f.info?.pages || 3) * 4;
+      else secs += f.kind === "video" ? dur * 0.7 + 3 : f.kind === "audio" ? dur * 0.05 + 2 : f.kind === "image" ? 1 : 5;
     }
   }
   const ahead = queue.running + queue.waiting;
@@ -855,10 +923,81 @@ function SideChoose({ groups, files, estFile, keepHours, setKeepHours, queue, re
     </section>`;
 }
 
-function SideGet({ job, jobId, setJob, flash }) {
+function QR({ text }) {
+  const svg = useMemo(() => {
+    const q = qrcode(0, "M");
+    q.addData(text);
+    q.make();
+    return q.createSvgTag({ cellSize: 4, margin: 3, scalable: true });
+  }, [text]);
+  return html`<div class="qr" role="img" aria-label=${t("qrLabel")} dangerouslySetInnerHTML=${{ __html: svg }}></div>`;
+}
+
+function ShareCard({ job, jobId, setJob, flash, publicUrl }) {
+  const [choice, setChoice] = useState("24h");
+  const [copied, setCopied] = useState(null);
+  const done = job.items.filter((i) => i.status === "done");
+  if (!done.length) return null;
+  // LAN visitors would otherwise hand out http://lasgatas:3010 links that only work at home
+  const linkFor = (token) => (publicUrl ? `${publicUrl}/s/${token}` : `${location.origin}${url(`/s/${token}`)}`);
+  const latest = job.shares?.[0];
+  const make = async () => {
+    try {
+      await api.share(jobId, choice, done.length === 1 ? done[0].id : undefined);
+      setJob(await api.job(jobId));
+    } catch (e) {
+      flash(e.message);
+    }
+  };
+  const copy = async (token) => {
+    try {
+      await navigator.clipboard.writeText(linkFor(token));
+      setCopied(token);
+      setTimeout(() => setCopied(null), 2000);
+    } catch {
+      flash(linkFor(token));
+    }
+  };
+  const stop = async (token) => {
+    try {
+      await api.unshare(jobId, token);
+      setJob(await api.job(jobId));
+    } catch (e) {
+      flash(e.message);
+    }
+  };
+  return html`
+    <section class="card pad">
+      <h3>${t("shareTitle")}</h3>
+      ${latest && html`
+        <div style="display: flex; flex-direction: column; align-items: center; gap: 10px; text-align: center">
+          <${QR} text=${linkFor(latest.token)} />
+          <strong>${t("phone")}</strong>
+          <span class="muted small">${t("phoneSub")}</span>
+        </div>`}
+      ${(job.shares || []).map((s) => html`
+        <div style="display: flex; flex-direction: column; gap: 6px; padding-top: 8px; border-top: 1px solid var(--bd)" key=${s.token}>
+          <div style="display: flex; gap: 8px">
+            <input type="text" readonly value=${linkFor(s.token)} aria-label=${t("shareTitle")} class="mono" style="flex: 1; min-width: 0; font-size: 12px" onFocus=${(e) => e.target.select()} />
+            <button type="button" class="btn" style="padding: 8px 12px; border-radius: 10px" onClick=${() => copy(s.token)}>${copied === s.token ? t("copied") : t("copy")}</button>
+          </div>
+          <div class="kv small"><span>${s.once ? t("shareOnce") : t("shareUntil", { x: relTime(s.expires) })}</span><button type="button" class="link quiet" style="font-size: 13px" onClick=${() => stop(s.token)}>${t("stopSharing")}</button></div>
+        </div>`)}
+      <div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center">
+        <label class="sr" for="share-choice">${t("linkWorks")}</label>
+        <select id="share-choice" value=${choice} onChange=${(e) => setChoice(e.target.value)} style="flex: 1 1 140px">
+          ${["24h", "3d", "7d", "once"].map((c) => html`<option value=${c}>${t("shareChoice_" + c)}</option>`)}
+        </select>
+        <button type="button" class="btn primary" style="padding: 10px 14px; border-radius: 10px" onClick=${make}>${latest ? t("newLink") : t("makeLink")}</button>
+      </div>
+    </section>`;
+}
+
+function SideGet({ job, jobId, setJob, flash, session }) {
   if (!job) return null;
   const current = job.keepUntil === "forever" ? -1 : null;
   return html`
+    <${ShareCard} job=${job} jobId=${jobId} setJob=${setJob} flash=${flash} publicUrl=${session?.publicUrl} />
     <section class="card pad">
       <h3>${t("keepLonger")}</h3>
       <span class="muted small">${untilText(job.keepUntil) || ""}</span>

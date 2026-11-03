@@ -66,41 +66,57 @@ function friendlyError(stderr: string, cmd: string): { error: string; fixable: b
   if (cmd === "ffmpeg" && /(invalid data found|corrupt|error while decoding|invalid nal|moov atom not found|truncat)/.test(s)) {
     return { error: "Part of this file looks damaged. We can skip the broken parts and save the rest.", fixable: true };
   }
+  if (cmd === "ocrmypdf" && s.includes("page already has text")) return { error: "This PDF already has text. Use \"Plain text\" instead.", fixable: false };
+  if (cmd === "ocrmypdf" && s.includes("digital signature")) return { error: "This PDF is digitally signed, so it can't be changed.", fixable: false };
+  if (cmd === "whisper-cli" && /failed to (open|read)|no audio/.test(s)) return { error: "This file has no sound to transcribe.", fixable: false };
   if (s.includes("password") || s.includes("encrypted")) return { error: "This file is password-protected. Remove the password and try again.", fixable: false };
   if (/not found|enoent/.test(s) && s.includes("spawn")) return { error: `A converter tool (${cmd}) is missing on the server. Tell Jorge.`, fixable: false };
   return { error: "Something went wrong converting this file. Try a different format, or see the technical details.", fixable: false };
 }
 
-async function exec(cmd: string, args: string[], onStdout?: (line: string) => void): Promise<{ code: number; stderr: string }> {
+async function eachLine(stream: ReadableStream<Uint8Array>, fn: (line: string) => void, sink?: (chunk: Uint8Array) => void): Promise<void> {
+  const reader = stream.getReader();
+  const dec = new TextDecoder();
+  let buf = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    sink?.(value);
+    buf += dec.decode(value, { stream: true });
+    let nl;
+    while ((nl = buf.search(/[\r\n]/)) >= 0) {
+      fn(buf.slice(0, nl));
+      buf = buf.slice(nl + 1);
+    }
+    if (buf.length > 65536) buf = buf.slice(-4096);
+  }
+  if (buf) fn(buf);
+}
+
+interface ExecOpts {
+  onStdout?: ((line: string) => void) | undefined;
+  onStderr?: ((line: string) => void) | undefined;
+  stdoutTo?: string | undefined;
+}
+
+async function exec(cmd: string, args: string[], o: ExecOpts = {}): Promise<{ code: number; stderr: string }> {
   let proc;
   try {
     proc = Bun.spawn([cmd, ...args], { stdout: "pipe", stderr: "pipe", env: { ...process.env, HOME: process.env.HOME ?? "/tmp" } });
   } catch (e) {
     return { code: 127, stderr: `spawn ${cmd} ENOENT ${String(e)}` };
   }
-  const readOut = (async () => {
-    if (!onStdout) {
-      await new Response(proc.stdout).arrayBuffer();
-      return;
-    }
-    const reader = proc.stdout.getReader();
-    const dec = new TextDecoder();
-    let buf = "";
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += dec.decode(value, { stream: true });
-      let nl;
-      while ((nl = buf.indexOf("\n")) >= 0) {
-        onStdout(buf.slice(0, nl));
-        buf = buf.slice(nl + 1);
-      }
-    }
-  })();
-  const stderr = await new Response(proc.stderr).text();
-  await readOut;
+  const writer = o.stdoutTo ? Bun.file(o.stdoutTo).writer() : null;
+  const readOut = eachLine(proc.stdout, o.onStdout ?? (() => {}), writer ? (c) => void writer.write(c) : undefined);
+  let tail = "";
+  const readErr = eachLine(proc.stderr, (line) => {
+    o.onStderr?.(line);
+    tail = (tail + line + "\n").slice(-6000);
+  });
+  await Promise.all([readOut, readErr]);
+  if (writer) await writer.end();
   const code = await proc.exited;
-  return { code, stderr: stderr.slice(-6000) };
+  return { code, stderr: tail };
 }
 
 async function runItem(itemId: number): Promise<void> {
@@ -164,21 +180,28 @@ async function runItem(itemId: number): Promise<void> {
     const step = steps[i]!;
     const base = Math.floor((i / steps.length) * 100);
     const span = 100 / steps.length;
-    const onStdout = step.cmd === "ffmpeg" ? (line: string) => {
-      const m = /^out_time_(?:us|ms)=(\d+)/.exec(line);
-      if (!m) return;
-      const pct = Math.min(99, Math.floor(base + (Number(m[1]) / 1e6 / dur) * span));
-      if (pct !== lastPct && pct >= 0) {
+    const report = (frac: number) => {
+      const pct = Math.max(0, Math.min(99, Math.floor(base + frac * span)));
+      if (pct !== lastPct) {
         lastPct = pct;
         updateItem(itemId, { progress: pct });
       }
+    };
+    const kind = step.progress ?? (step.cmd === "ffmpeg" ? "ffmpeg" : undefined);
+    const onStdout = kind === "ffmpeg" ? (line: string) => {
+      const m = /^out_time_(?:us|ms)=(\d+)/.exec(line);
+      if (m) report(Number(m[1]) / 1e6 / dur);
     } : undefined;
-    const { code, stderr } = await exec(step.cmd, step.args, onStdout);
+    const onStderr = kind === "whisper" ? (line: string) => {
+      const m = /progress =\s*(\d+)%/.exec(line);
+      if (m) report(Number(m[1]) / 100);
+    } : undefined;
+    const { code, stderr } = await exec(step.cmd, step.args, { onStdout, onStderr, stdoutTo: step.stdoutTo });
     if (code !== 0) {
       const fe = friendlyError(stderr, step.cmd);
       return finish({ status: "failed", error: fe.error, fixable: fe.fixable && item.tolerant !== 1 ? 1 : 0, detail: `$ ${step.cmd} ${step.args.join(" ")}\n\n${stderr}` });
     }
-    if (!onStdout) updateItem(itemId, { progress: Math.floor(base + span) });
+    if (!kind) updateItem(itemId, { progress: Math.floor(base + span) });
   }
 
   const produced = findOutputs(tmp, recipe.ext, tmpOut);

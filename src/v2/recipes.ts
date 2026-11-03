@@ -58,6 +58,8 @@ export interface FileInfo {
 export interface Step {
   cmd: string;
   args: string[];
+  stdoutTo?: string; // write the command's stdout to this file
+  progress?: "ffmpeg" | "whisper";
 }
 
 export interface PlanCtx {
@@ -95,6 +97,27 @@ const SIZE = SEL("size", "Size", ["Original size", "Max 2048 px — sharing", "M
 const GPS = CHK("gps", "Remove location", "No one can see where photos were taken", true, "location removed", "location kept");
 const DATE = CHK("date", "Keep date taken", "Photos stay in order in your gallery", true, null, "date removed");
 const NORM = (def: boolean) => CHK("norm", "Even out the volume", "Quiet parts get louder, loud parts softer", def, "volume evened out", null);
+const OCR_LANG = SEL("lang", "Language on the page", ["English + Spanish", "English", "Spanish"], 0);
+const OCR_CODES = ["eng+spa", "eng", "spa"];
+const STRAIGHT = CHK("deskew", "Straighten crooked pages", "Fixes tilted phone scans", true, "pages straightened", null);
+const SPOKEN = SEL("lang", "Language spoken", ["Detect automatically", "Spanish", "English"], 0);
+const SPOKEN_CODES = ["auto", "es", "en"];
+const STAMPS = CHK("ts", "Include timestamps", "Shows when each line was said", false, "with timestamps", null);
+
+export const WHISPER_MODEL = "/opt/whisper/ggml-small.bin";
+const stripExt = (p: string) => p.replace(/\.[^./\\]+$/, "");
+
+// Whisper wants 16 kHz mono WAV; ffmpeg handles trimming and any input format first.
+function whisperSteps(c: PlanCtx, mode: "txt" | "srt"): Step[] {
+  const wav = `${c.tmp}/speech.wav`;
+  const lang = SPOKEN_CODES[num(c.opts, "lang")]!;
+  const base = ["-m", WHISPER_MODEL, "-f", wav, "-l", lang, "-t", "6", "-pp"];
+  const steps: Step[] = [{ cmd: "ffmpeg", args: [...videoIn(c), "-vn", "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", wav], progress: "ffmpeg" }];
+  if (mode === "srt") steps.push({ cmd: "whisper-cli", args: [...base, "-osrt", "-of", stripExt(c.output)], progress: "whisper" });
+  else if (flag(c.opts, "ts")) steps.push({ cmd: "whisper-cli", args: [...base], stdoutTo: c.output, progress: "whisper" });
+  else steps.push({ cmd: "whisper-cli", args: [...base, "-otxt", "-of", stripExt(c.output)], progress: "whisper" });
+  return steps;
+}
 
 export function defaults(r: Recipe): OptionValues {
   const v: OptionValues = {};
@@ -189,6 +212,17 @@ const imageRecipes: Recipe[] = [
   },
 ];
 
+const imageExtra: Recipe[] = [
+  {
+    id: "img-txt", kind: "image", title: "Text from photo", desc: "Reads the words in a photo of a document or sign.", factor: 0.001, ext: "txt",
+    settings: [OCR_LANG],
+    plan: ({ inputs, output, tmp, opts: v }) => [
+      { cmd: "vips", args: ["copy", inputs[0]!, `${tmp}/ocr.png`] },
+      { cmd: "tesseract", args: [`${tmp}/ocr.png`, stripExt(output), "-l", OCR_CODES[num(v, "lang")]!] },
+    ],
+  },
+];
+
 // ---------- video ----------
 const CRF = [28, 23, 18];
 const VRES = [0, 1080, 720];
@@ -242,6 +276,16 @@ const videoRecipes: Recipe[] = [
       return [{ cmd: "ffmpeg", args: [...videoIn(c), ...(t?.end ? [] : ["-t", "15"]), "-vf", `fps=${fps},scale=${w}:-1:flags=lanczos,split[a][b];[a]palettegen[p];[b][p]paletteuse`, "-loop", "0", c.output] }];
     },
   },
+  {
+    id: "vid-subs", kind: "video", title: "Subtitles", desc: "An .srt file with what's said, timed to the video.", factor: 0.0005, ext: "srt",
+    settings: [SPOKEN, TRIM],
+    plan: (c) => whisperSteps(c, "srt"),
+  },
+  {
+    id: "vid-transcript", kind: "video", title: "Transcript", desc: "Types out everything that's said.", factor: 0.0003, ext: "txt",
+    settings: [SPOKEN, STAMPS, TRIM],
+    plan: (c) => whisperSteps(c, "txt"),
+  },
 ];
 
 function toSeconds(s: string): number {
@@ -265,6 +309,11 @@ const audioRecipes: Recipe[] = [
       const af = [flag(c.opts, "noise") ? "afftdn" : "", flag(c.opts, "norm") ? "loudnorm" : ""].filter(Boolean).join(",");
       return [{ cmd: "ffmpeg", args: [...videoIn(c), "-vn", "-c:a", "libmp3lame", "-b:a", ["128k", "192k", "320k"][num(c.opts, "q")]!, ...(af ? ["-af", af] : []), c.output] }];
     },
+  },
+  {
+    id: "aud-transcript", kind: "audio", title: "Transcript", desc: "Types out what's said, in Spanish or English.", factor: 0.002, ext: "txt",
+    settings: [SPOKEN, STAMPS],
+    plan: (c) => whisperSteps(c, "txt"),
   },
   {
     id: "aud-m4a", kind: "audio", title: "M4A", desc: "Best for iPhone and Apple Music.", factor: 0.8, ext: "m4a",
@@ -302,6 +351,16 @@ const pdfRecipes: Recipe[] = [
     id: "pdf-txt", kind: "pdf", title: "Plain text", desc: "Just the words, for copying.", factor: 0.02, ext: "txt",
     settings: [CHK("layout", "Keep the layout", "Keeps columns and spacing instead of one long flow", false, "layout kept", null)],
     plan: ({ inputs, output, opts: v }) => [{ cmd: "pdftotext", args: [...(flag(v, "layout") ? ["-layout"] : []), inputs[0]!, output] }],
+  },
+  {
+    id: "pdf-ocr-txt", kind: "pdf", title: "Text from scan", desc: "Reads the words on scanned pages so you can copy them.", factor: 0.02, ext: "txt",
+    settings: [OCR_LANG, STRAIGHT],
+    plan: ({ inputs, output, opts: v }) => [{ cmd: "ocrmypdf", args: ["-q", "-l", OCR_CODES[num(v, "lang")]!, "--force-ocr", ...(flag(v, "deskew") ? ["--deskew"] : []), "--sidecar", output, "--output-type", "none", inputs[0]!, "-"] }],
+  },
+  {
+    id: "pdf-ocr-pdf", kind: "pdf", title: "Searchable PDF", desc: "Same pages, but you can search and copy the text.", factor: 1.1, ext: "pdf",
+    settings: [OCR_LANG, STRAIGHT],
+    plan: ({ inputs, output, opts: v }) => [{ cmd: "ocrmypdf", args: ["-q", "-l", OCR_CODES[num(v, "lang")]!, "--skip-text", ...(flag(v, "deskew") ? ["--rotate-pages", "--deskew"] : []), "--optimize", "1", inputs[0]!, output] }],
   },
 ];
 
@@ -342,7 +401,7 @@ const ebookRecipes: Recipe[] = [
   },
 ];
 
-export const RECIPES: Recipe[] = [...imageRecipes, ...videoRecipes, ...audioRecipes, ...pdfRecipes, ...docRecipes, ...ebookRecipes];
+export const RECIPES: Recipe[] = [...imageRecipes, ...imageExtra, ...videoRecipes, ...audioRecipes, ...pdfRecipes, ...docRecipes, ...ebookRecipes];
 
 export function recipeById(id: string): Recipe | undefined {
   return RECIPES.find((r) => r.id === id);
@@ -391,4 +450,10 @@ export function describe(r: Recipe, v: OptionValues, info: FileInfo[] = [{}], n 
   const inputs = Array.from({ length: r.merge ? Math.max(2, n) : 1 }, (_, i) => (r.merge ? `in${i + 1}` : "in"));
   const steps = r.plan({ inputs, output: `out.${r.ext}`, tmp: "tmp", opts: v, info });
   return steps.map((s) => "$ " + [s.cmd, ...s.args.filter((a) => a !== "-progress" && a !== "pipe:1" && a !== "-nostats" && a !== "-hide_banner")].map((a) => (/[\s'()[\];,]/.test(a) ? `"${a}"` : a)).join(" "));
+}
+
+// Which card gets the "Best" badge and starts selected, given what the probe found.
+export function recommended(kind: Kind, infos: FileInfo[]): string | null {
+  if (kind === "pdf" && infos.some((i) => i.hasText === false)) return "pdf-ocr-txt";
+  return null;
 }

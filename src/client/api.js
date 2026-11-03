@@ -35,6 +35,9 @@ export const api = {
   targets: (exts) => j("GET", `/api/targets?exts=${encodeURIComponent(exts.join(","))}`),
   storage: () => j("GET", "/api/storage"),
   queue: () => j("GET", "/api/queue"),
+  importUrl: (id, link) => j("POST", `/api/jobs/${id}/import`, { url: link }),
+  share: (id, choice, itemId) => j("POST", `/api/jobs/${id}/share`, itemId ? { choice, itemId } : { choice }),
+  unshare: (id, token) => j("DELETE", `/api/jobs/${id}/share/${token}`),
 };
 
 export const fileUrl = (jobId, itemId, dl) => url(`/api/jobs/${jobId}/items/${itemId}/file${dl ? "?dl=1" : ""}`);
